@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
+from chromadb.config import Settings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -11,6 +12,7 @@ from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
 load_dotenv()
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
 
 
 class RAGService:
@@ -20,6 +22,7 @@ class RAGService:
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
         os.makedirs(self.persist_directory, exist_ok=True)
         print(f"ChromaDB directory: {self.persist_directory}")
+        self.chroma_settings = Settings(anonymized_telemetry=False)
 
         print("Loading embeddings model...")
         self.embeddings = HuggingFaceEmbeddings(
@@ -195,6 +198,7 @@ Output:"""
                 embedding=self.embeddings,
                 persist_directory=self.persist_directory,
                 collection_name=f"session_{session_id.replace('-', '_')}",
+                client_settings=self.chroma_settings,
             )
 
             print(f"\nSUCCESS: Processed and stored {len(chunks)} chunks")
@@ -233,6 +237,7 @@ Output:"""
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
                 collection_name=collection_name,
+                client_settings=self.chroma_settings,
             )
 
             print("Searching relevant chunks with multi-query retrieval...")
@@ -328,6 +333,7 @@ Jawaban:"""
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
                 collection_name=collection_name,
+                client_settings=self.chroma_settings,
             )
 
             print("Retrieving document chunks...")
