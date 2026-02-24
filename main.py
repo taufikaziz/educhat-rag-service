@@ -1,5 +1,6 @@
 from datetime import datetime
 import os
+from threading import Lock
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -14,7 +15,18 @@ print("\n" + "=" * 60)
 print("Initializing RAG Service...")
 print("=" * 60 + "\n")
 
-rag_service = RAGService()
+_rag_service = None
+_rag_lock = Lock()
+
+
+def get_rag_service() -> RAGService:
+    """Initialize the heavy RAG service only when first needed."""
+    global _rag_service
+    if _rag_service is None:
+        with _rag_lock:
+            if _rag_service is None:
+                _rag_service = RAGService()
+    return _rag_service
 
 UPLOAD_FOLDER = "./uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -75,6 +87,7 @@ def process_document():
     file.save(filepath)
     print(f"File saved temporarily: {filepath}")
 
+    rag_service = get_rag_service()
     result = rag_service.process_pdf(filepath, session_id)
 
     try:
@@ -106,6 +119,7 @@ def query():
         print("ERROR: Missing question or session_id")
         return jsonify({"success": False, "message": "question and session_id required"}), 400
 
+    rag_service = get_rag_service()
     result = rag_service.query(question, session_id)
 
     if result.get("success"):
@@ -127,6 +141,7 @@ def summary():
         print("ERROR: No session_id provided")
         return jsonify({"success": False, "message": "session_id required"}), 400
 
+    rag_service = get_rag_service()
     result = rag_service.generate_summary(session_id)
 
     if result.get("success"):
