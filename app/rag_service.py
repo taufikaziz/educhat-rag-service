@@ -2,6 +2,9 @@ import os
 import re
 from typing import Dict, List, Optional
 
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+os.environ.setdefault("CHROMA_TELEMETRY", "FALSE")
+
 from dotenv import load_dotenv
 from chromadb.config import Settings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -12,7 +15,6 @@ from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
 load_dotenv()
-os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
 
 
 class RAGService:
@@ -44,6 +46,18 @@ class RAGService:
         )
 
         print("RAG Service initialized successfully\n")
+
+    @staticmethod
+    def _collection_count(vectorstore: Chroma) -> int:
+        """Safely read collection size for adaptive retrieval params."""
+        try:
+            collection = getattr(vectorstore, "_collection", None)
+            if collection is None:
+                return 0
+            count = collection.count()
+            return int(count) if count is not None else 0
+        except Exception:
+            return 0
 
     def _expand_queries(self, question: str) -> List[str]:
         """Generate focused retrieval queries from one user question."""
@@ -83,6 +97,8 @@ Output:"""
         queries = self._expand_queries(question)
         all_docs: List[Document] = []
         requested_page = self._extract_requested_page(question)
+        collection_size = self._collection_count(vectorstore)
+        mmr_fetch_k = min(20, collection_size) if collection_size > 0 else 20
 
         if requested_page is not None:
             print(f"Detected explicit page request: {requested_page}")
@@ -90,7 +106,7 @@ Output:"""
             all_docs.extend(page_docs)
 
         for query in queries:
-            docs = vectorstore.max_marginal_relevance_search(query, k=4, fetch_k=20)
+            docs = vectorstore.max_marginal_relevance_search(query, k=4, fetch_k=mmr_fetch_k)
             all_docs.extend(docs)
 
         seen = set()
@@ -121,16 +137,17 @@ Output:"""
                     return number
         return None
 
-    @staticmethod
-    def _retrieve_for_page(vectorstore: Chroma, question: str, page_number: int) -> List[Document]:
+    def _retrieve_for_page(self, vectorstore: Chroma, question: str, page_number: int) -> List[Document]:
         """Retrieve chunks filtered by a specific page (1-based page_number)."""
         page_index = page_number - 1
+        collection_size = self._collection_count(vectorstore)
+        fetch_k = min(30, collection_size) if collection_size > 0 else 30
 
         try:
             docs = vectorstore.max_marginal_relevance_search(
                 question,
                 k=6,
-                fetch_k=30,
+                fetch_k=fetch_k,
                 filter={"page": page_index},
             )
             if docs:
@@ -337,8 +354,12 @@ Jawaban:"""
             )
 
             print("Retrieving document chunks...")
+            collection_size = self._collection_count(vectorstore)
+            summary_fetch_k = min(30, collection_size) if collection_size > 0 else 30
             docs = vectorstore.max_marginal_relevance_search(
-                "ringkasan materi pembelajaran konsep utama definisi contoh", k=12, fetch_k=30
+                "ringkasan materi pembelajaran konsep utama definisi contoh",
+                k=12,
+                fetch_k=summary_fetch_k,
             )
 
             if not docs:
