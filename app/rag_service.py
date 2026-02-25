@@ -208,10 +208,34 @@ Output:"""
             loader = PyPDFLoader(file_path)
             documents = loader.load()
             print(f"Loaded {len(documents)} pages")
+            text_pages = sum(1 for doc in documents if doc.page_content and doc.page_content.strip())
+            print(f"Pages with extractable text: {text_pages}")
+
+            if text_pages == 0:
+                return {
+                    "success": False,
+                    "message": (
+                        "PDF tidak memiliki teks yang bisa diekstrak (kemungkinan hasil scan/gambar). "
+                        "Silakan gunakan PDF berbasis teks atau jalankan OCR terlebih dahulu."
+                    ),
+                    "num_chunks": 0,
+                    "num_pages": len(documents),
+                }
 
             print("Splitting into chunks...")
             chunks = self.text_splitter.split_documents(documents)
+            chunks = [chunk for chunk in chunks if chunk.page_content and chunk.page_content.strip()]
             print(f"Created {len(chunks)} chunks")
+
+            if not chunks:
+                return {
+                    "success": False,
+                    "message": (
+                        "Teks pada PDF terlalu minim atau kosong, sehingga tidak ada chunk yang bisa diproses."
+                    ),
+                    "num_chunks": 0,
+                    "num_pages": len(documents),
+                }
 
             print("Adding metadata...")
             for chunk in chunks:
