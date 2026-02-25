@@ -53,6 +53,8 @@ class RAGService:
             chunk_size=900,
             chunk_overlap=150,
         )
+        self.default_query_mode = os.getenv("RAG_QUERY_MODE", "fast").lower()
+        self.max_pdf_pages = int(os.getenv("MAX_PDF_PAGES", "80"))
         self.operation_lock = Lock()
 
         print("RAG Service initialized successfully\n")
@@ -102,13 +104,16 @@ Output:"""
 
         return merged
 
-    def _retrieve_context(self, vectorstore: Chroma, question: str) -> List[Document]:
+    def _retrieve_context(self, vectorstore: Chroma, question: str, mode: str = "fast") -> List[Document]:
         """Retrieve and deduplicate relevant chunks using multi-query + MMR."""
-        queries = self._expand_queries(question)
+        use_deep_mode = mode == "deep"
+        queries = self._expand_queries(question) if use_deep_mode else [question]
         all_docs: List[Document] = []
         requested_page = self._extract_requested_page(question)
         collection_size = self._collection_count(vectorstore)
-        mmr_fetch_k = min(20, collection_size) if collection_size > 0 else 20
+        default_fetch_k = 20 if use_deep_mode else 10
+        default_k = 4 if use_deep_mode else 3
+        mmr_fetch_k = min(default_fetch_k, collection_size) if collection_size > 0 else default_fetch_k
 
         if requested_page is not None:
             print(f"Detected explicit page request: {requested_page}")
@@ -116,7 +121,7 @@ Output:"""
             all_docs.extend(page_docs)
 
         for query in queries:
-            docs = vectorstore.max_marginal_relevance_search(query, k=4, fetch_k=mmr_fetch_k)
+            docs = vectorstore.max_marginal_relevance_search(query, k=default_k, fetch_k=mmr_fetch_k)
             all_docs.extend(docs)
 
         seen = set()
@@ -200,7 +205,7 @@ Output:"""
 
     def process_pdf(self, file_path: str, session_id: str) -> Dict:
         """Process PDF and store in ChromaDB."""
-        if not self.operation_lock.acquire(timeout=15):
+        if not self.operation_lock.acquire(timeout=3):
             return {
                 "success": False,
                 "busy": True,
@@ -217,6 +222,16 @@ Output:"""
                 loader = PyPDFLoader(file_path)
                 documents = loader.load()
                 print(f"Loaded {len(documents)} pages")
+                if len(documents) > self.max_pdf_pages:
+                    return {
+                        "success": False,
+                        "message": (
+                            f"Jumlah halaman terlalu besar ({len(documents)}). "
+                            f"Maksimal {self.max_pdf_pages} halaman per upload agar server stabil."
+                        ),
+                        "num_chunks": 0,
+                        "num_pages": len(documents),
+                    }
                 text_pages = sum(1 for doc in documents if doc.page_content and doc.page_content.strip())
                 print(f"Pages with extractable text: {text_pages}")
 
@@ -281,9 +296,9 @@ Output:"""
         finally:
             self.operation_lock.release()
 
-    def query(self, question: str, session_id: str) -> Dict:
+    def query(self, question: str, session_id: str, mode: str = "fast") -> Dict:
         """Query the RAG system."""
-        if not self.operation_lock.acquire(timeout=15):
+        if not self.operation_lock.acquire(timeout=3):
             return {
                 "success": False,
                 "busy": True,
@@ -291,10 +306,15 @@ Output:"""
             }
         try:
             try:
+                selected_mode = mode.lower().strip() if mode else self.default_query_mode
+                if selected_mode not in {"fast", "deep"}:
+                    selected_mode = self.default_query_mode if self.default_query_mode in {"fast", "deep"} else "fast"
+
                 print(f"\n{'=' * 60}")
                 print("Query received")
                 print(f"Question: {question}")
                 print(f"Session ID: {session_id}")
+                print(f"Mode: {selected_mode}")
                 print(f"{'=' * 60}\n")
 
                 collection_name = f"session_{session_id.replace('-', '_')}"
@@ -307,8 +327,8 @@ Output:"""
                     client_settings=self.chroma_settings,
                 )
 
-                print("Searching relevant chunks with multi-query retrieval...")
-                docs = self._retrieve_context(vectorstore, question)
+                print("Searching relevant chunks...")
+                docs = self._retrieve_context(vectorstore, question, mode=selected_mode)
                 requested_page = self._extract_requested_page(question)
 
                 if not docs:
@@ -371,6 +391,7 @@ Jawaban:"""
 
                 return {
                     "success": True,
+                    "mode": selected_mode,
                     "answer": response.content,
                     "sources": sources,
                 }
@@ -389,7 +410,7 @@ Jawaban:"""
 
     def generate_summary(self, session_id: str) -> Dict:
         """Generate summary of document."""
-        if not self.operation_lock.acquire(timeout=15):
+        if not self.operation_lock.acquire(timeout=3):
             return {
                 "success": False,
                 "busy": True,

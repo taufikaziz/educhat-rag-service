@@ -116,13 +116,14 @@ def query():
     data = request.json or {}
     question = data.get("question")
     session_id = data.get("session_id")
+    mode = data.get("mode", "fast")
 
     if not question or not session_id:
         print("ERROR: Missing question or session_id")
         return jsonify({"success": False, "message": "question and session_id required"}), 400
 
     rag_service = get_rag_service()
-    result = rag_service.query(question, session_id)
+    result = rag_service.query(question, session_id, mode=mode)
 
     if result.get("success"):
         return jsonify(result), 200
