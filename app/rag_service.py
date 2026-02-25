@@ -107,7 +107,7 @@ Output:"""
     def _retrieve_context(self, vectorstore: Chroma, question: str, mode: str = "fast") -> List[Document]:
         """Retrieve and deduplicate relevant chunks using multi-query + MMR."""
         use_deep_mode = mode == "deep"
-        queries = self._expand_queries(question) if use_deep_mode else [question]
+        queries = self._build_retrieval_queries(question, use_deep_mode=use_deep_mode)
         all_docs: List[Document] = []
         requested_page = self._extract_requested_page(question)
         collection_size = self._collection_count(vectorstore)
@@ -133,7 +133,71 @@ Output:"""
             seen.add(key)
             unique_docs.append(doc)
 
+        # Fallback lexical retrieval to handle short/ambiguous queries (e.g., "nomor 1").
+        if len(unique_docs) < 4:
+            fallback_docs = self._keyword_retrieve(vectorstore, question, limit=8)
+            for doc in fallback_docs:
+                key = (doc.page_content[:200], doc.metadata.get("page", -1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_docs.append(doc)
+
         return unique_docs[:8]
+
+    def _build_retrieval_queries(self, question: str, use_deep_mode: bool) -> List[str]:
+        """Build robust retrieval queries for short/ambiguous user input."""
+        queries = [question.strip()]
+        requested_page = self._extract_requested_page(question)
+        requested_number = self._extract_question_number(question)
+        lower_q = question.lower()
+
+        if requested_number is not None:
+            queries.extend(
+                [
+                    f"soal nomor {requested_number}",
+                    f"jawaban nomor {requested_number}",
+                    f"pertanyaan nomor {requested_number}",
+                ]
+            )
+
+        if requested_page is not None:
+            queries.extend(
+                [
+                    f"halaman {requested_page}",
+                    f"slide {requested_page}",
+                    f"isi halaman {requested_page}",
+                ]
+            )
+            if requested_number is not None:
+                queries.append(f"halaman {requested_page} soal nomor {requested_number}")
+
+        # For very short questions, add broad educational cues.
+        word_count = len([w for w in re.split(r"\s+", lower_q) if w.strip()])
+        if word_count <= 5:
+            queries.extend(
+                [
+                    f"{question} materi",
+                    f"{question} pembahasan",
+                    f"{question} penjelasan",
+                ]
+            )
+
+        if use_deep_mode:
+            deep_queries = self._expand_queries(question)
+            queries.extend(deep_queries)
+
+        # Deduplicate while preserving order.
+        unique_queries: List[str] = []
+        seen = set()
+        for q in queries:
+            normalized = q.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_queries.append(q.strip())
+
+        return unique_queries[:8]
 
     @staticmethod
     def _extract_requested_page(question: str) -> Optional[int]:
@@ -151,6 +215,90 @@ Output:"""
                 if number > 0:
                     return number
         return None
+
+    @staticmethod
+    def _extract_question_number(question: str) -> Optional[int]:
+        """Extract referenced question number (nomor/soal) from user text."""
+        lower_question = question.lower()
+        patterns = [
+            r"\b(?:nomor|no|soal)\s*(?:ke|ke-)?\s*(\d+)\b",
+            r"\b(\d+)\s*(?:\.|\)|:)\s*",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, lower_question)
+            if match:
+                number = int(match.group(1))
+                if number > 0:
+                    return number
+        return None
+
+    def _keyword_retrieve(self, vectorstore: Chroma, question: str, limit: int = 8) -> List[Document]:
+        """Fallback lexical retrieval for ambiguous queries that embedding search misses."""
+        try:
+            raw = vectorstore.get(
+                include=["documents", "metadatas"],
+                limit=400,
+            )
+        except Exception:
+            return []
+
+        documents = raw.get("documents") or []
+        metadatas = raw.get("metadatas") or []
+        if not documents:
+            return []
+
+        requested_page = self._extract_requested_page(question)
+        requested_number = self._extract_question_number(question)
+        q_tokens = self._tokenize_for_match(question)
+
+        scored_docs = []
+        for idx, text in enumerate(documents):
+            if not text:
+                continue
+            metadata = metadatas[idx] if idx < len(metadatas) and metadatas[idx] else {}
+            text_lower = text.lower()
+            score = 0
+
+            if requested_page is not None and metadata.get("page") == requested_page - 1:
+                score += 6
+
+            if requested_number is not None:
+                if f"nomor {requested_number}" in text_lower or f"no {requested_number}" in text_lower:
+                    score += 6
+                if re.search(rf"\b{requested_number}\s*[\.\)\:]", text_lower):
+                    score += 4
+
+            token_hits = sum(1 for token in q_tokens if token in text_lower)
+            score += token_hits
+
+            if score > 0:
+                scored_docs.append((score, Document(page_content=text, metadata=metadata)))
+
+        scored_docs.sort(key=lambda item: item[0], reverse=True)
+        return [doc for _, doc in scored_docs[:limit]]
+
+    @staticmethod
+    def _tokenize_for_match(text: str) -> List[str]:
+        tokens = re.findall(r"[a-zA-Z0-9]+", text.lower())
+        stopwords = {
+            "yang",
+            "dan",
+            "atau",
+            "di",
+            "ke",
+            "dari",
+            "untuk",
+            "apa",
+            "berapa",
+            "itu",
+            "ini",
+            "jawaban",
+            "soal",
+            "nomor",
+            "slide",
+            "halaman",
+        }
+        return [token for token in tokens if len(token) > 2 and token not in stopwords]
 
     def _retrieve_for_page(self, vectorstore: Chroma, question: str, page_number: int) -> List[Document]:
         """Retrieve chunks filtered by a specific page (1-based page_number)."""
