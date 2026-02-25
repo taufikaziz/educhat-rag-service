@@ -1,6 +1,7 @@
 import os
 import re
 import warnings
+from threading import Lock
 from typing import Dict, List, Optional
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
@@ -52,6 +53,7 @@ class RAGService:
             chunk_size=900,
             chunk_overlap=150,
         )
+        self.operation_lock = Lock()
 
         print("RAG Service initialized successfully\n")
 
@@ -198,121 +200,137 @@ Output:"""
 
     def process_pdf(self, file_path: str, session_id: str) -> Dict:
         """Process PDF and store in ChromaDB."""
-        try:
-            print(f"\n{'=' * 60}")
-            print(f"Processing PDF: {os.path.basename(file_path)}")
-            print(f"Session ID: {session_id}")
-            print(f"{'=' * 60}\n")
-
-            print("Loading PDF...")
-            loader = PyPDFLoader(file_path)
-            documents = loader.load()
-            print(f"Loaded {len(documents)} pages")
-            text_pages = sum(1 for doc in documents if doc.page_content and doc.page_content.strip())
-            print(f"Pages with extractable text: {text_pages}")
-
-            if text_pages == 0:
-                return {
-                    "success": False,
-                    "message": (
-                        "PDF tidak memiliki teks yang bisa diekstrak (kemungkinan hasil scan/gambar). "
-                        "Silakan gunakan PDF berbasis teks atau jalankan OCR terlebih dahulu."
-                    ),
-                    "num_chunks": 0,
-                    "num_pages": len(documents),
-                }
-
-            print("Splitting into chunks...")
-            chunks = self.text_splitter.split_documents(documents)
-            chunks = [chunk for chunk in chunks if chunk.page_content and chunk.page_content.strip()]
-            print(f"Created {len(chunks)} chunks")
-
-            if not chunks:
-                return {
-                    "success": False,
-                    "message": (
-                        "Teks pada PDF terlalu minim atau kosong, sehingga tidak ada chunk yang bisa diproses."
-                    ),
-                    "num_chunks": 0,
-                    "num_pages": len(documents),
-                }
-
-            print("Adding metadata...")
-            for chunk in chunks:
-                chunk.metadata["session_id"] = session_id
-
-            print("Storing in ChromaDB...")
-            Chroma.from_documents(
-                documents=chunks,
-                embedding=self.embeddings,
-                persist_directory=self.persist_directory,
-                collection_name=f"session_{session_id.replace('-', '_')}",
-                client_settings=self.chroma_settings,
-            )
-
-            print(f"\nSUCCESS: Processed and stored {len(chunks)} chunks")
-            print(f"{'=' * 60}\n")
-
-            return {
-                "success": True,
-                "message": f"Successfully processed {len(chunks)} chunks",
-                "num_chunks": len(chunks),
-                "num_pages": len(documents),
-            }
-
-        except Exception as e:
-            print(f"\nERROR: {str(e)}\n")
-            import traceback
-
-            traceback.print_exc()
+        if not self.operation_lock.acquire(timeout=15):
             return {
                 "success": False,
-                "message": str(e),
+                "busy": True,
+                "message": "Server sedang memproses request lain. Coba lagi beberapa detik.",
             }
+        try:
+            try:
+                print(f"\n{'=' * 60}")
+                print(f"Processing PDF: {os.path.basename(file_path)}")
+                print(f"Session ID: {session_id}")
+                print(f"{'=' * 60}\n")
+
+                print("Loading PDF...")
+                loader = PyPDFLoader(file_path)
+                documents = loader.load()
+                print(f"Loaded {len(documents)} pages")
+                text_pages = sum(1 for doc in documents if doc.page_content and doc.page_content.strip())
+                print(f"Pages with extractable text: {text_pages}")
+
+                if text_pages == 0:
+                    return {
+                        "success": False,
+                        "message": (
+                            "PDF tidak memiliki teks yang bisa diekstrak (kemungkinan hasil scan/gambar). "
+                            "Silakan gunakan PDF berbasis teks atau jalankan OCR terlebih dahulu."
+                        ),
+                        "num_chunks": 0,
+                        "num_pages": len(documents),
+                    }
+
+                print("Splitting into chunks...")
+                chunks = self.text_splitter.split_documents(documents)
+                chunks = [chunk for chunk in chunks if chunk.page_content and chunk.page_content.strip()]
+                print(f"Created {len(chunks)} chunks")
+
+                if not chunks:
+                    return {
+                        "success": False,
+                        "message": (
+                            "Teks pada PDF terlalu minim atau kosong, sehingga tidak ada chunk yang bisa diproses."
+                        ),
+                        "num_chunks": 0,
+                        "num_pages": len(documents),
+                    }
+
+                print("Adding metadata...")
+                for chunk in chunks:
+                    chunk.metadata["session_id"] = session_id
+
+                print("Storing in ChromaDB...")
+                Chroma.from_documents(
+                    documents=chunks,
+                    embedding=self.embeddings,
+                    persist_directory=self.persist_directory,
+                    collection_name=f"session_{session_id.replace('-', '_')}",
+                    client_settings=self.chroma_settings,
+                )
+
+                print(f"\nSUCCESS: Processed and stored {len(chunks)} chunks")
+                print(f"{'=' * 60}\n")
+
+                return {
+                    "success": True,
+                    "message": f"Successfully processed {len(chunks)} chunks",
+                    "num_chunks": len(chunks),
+                    "num_pages": len(documents),
+                }
+
+            except Exception as e:
+                print(f"\nERROR: {str(e)}\n")
+                import traceback
+
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "message": str(e),
+                }
+        finally:
+            self.operation_lock.release()
 
     def query(self, question: str, session_id: str) -> Dict:
         """Query the RAG system."""
+        if not self.operation_lock.acquire(timeout=15):
+            return {
+                "success": False,
+                "busy": True,
+                "message": "Server sedang memproses request lain. Coba lagi beberapa detik.",
+            }
         try:
-            print(f"\n{'=' * 60}")
-            print("Query received")
-            print(f"Question: {question}")
-            print(f"Session ID: {session_id}")
-            print(f"{'=' * 60}\n")
+            try:
+                print(f"\n{'=' * 60}")
+                print("Query received")
+                print(f"Question: {question}")
+                print(f"Session ID: {session_id}")
+                print(f"{'=' * 60}\n")
 
-            collection_name = f"session_{session_id.replace('-', '_')}"
-            print(f"Loading collection: {collection_name}")
+                collection_name = f"session_{session_id.replace('-', '_')}"
+                print(f"Loading collection: {collection_name}")
 
-            vectorstore = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embeddings,
-                collection_name=collection_name,
-                client_settings=self.chroma_settings,
-            )
+                vectorstore = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=collection_name,
+                    client_settings=self.chroma_settings,
+                )
 
-            print("Searching relevant chunks with multi-query retrieval...")
-            docs = self._retrieve_context(vectorstore, question)
-            requested_page = self._extract_requested_page(question)
+                print("Searching relevant chunks with multi-query retrieval...")
+                docs = self._retrieve_context(vectorstore, question)
+                requested_page = self._extract_requested_page(question)
 
-            if not docs:
-                print("No relevant context found")
-                return {
-                    "success": False,
-                    "message": "No context found. Please upload a document first.",
-                }
-
-            if requested_page is not None:
-                has_requested_page = any(doc.metadata.get("page") == requested_page - 1 for doc in docs)
-                if not has_requested_page:
-                    print("Requested page not found in retrieved context")
+                if not docs:
+                    print("No relevant context found")
                     return {
                         "success": False,
-                        "message": f"Halaman/slide {requested_page} tidak ditemukan pada materi yang tersimpan.",
+                        "message": "No context found. Please upload a document first.",
                     }
 
-            print(f"Found {len(docs)} relevant chunks")
-            context = self._format_context(docs)
+                if requested_page is not None:
+                    has_requested_page = any(doc.metadata.get("page") == requested_page - 1 for doc in docs)
+                    if not has_requested_page:
+                        print("Requested page not found in retrieved context")
+                        return {
+                            "success": False,
+                            "message": f"Halaman/slide {requested_page} tidak ditemukan pada materi yang tersimpan.",
+                        }
 
-            prompt = f"""Kamu adalah asisten pembelajaran untuk mahasiswa.
+                print(f"Found {len(docs)} relevant chunks")
+                context = self._format_context(docs)
+
+                prompt = f"""Kamu adalah asisten pembelajaran untuk mahasiswa.
 
 Tugasmu: jawab pertanyaan hanya berdasarkan konteks materi.
 Jika informasi tidak cukup, katakan: "Maaf, informasi tersebut tidak ada dalam materi yang diupload."
@@ -333,78 +351,87 @@ Pertanyaan:
 
 Jawaban:"""
 
-            print("Generating answer...")
-            response = self.llm.invoke(prompt)
+                print("Generating answer...")
+                response = self.llm.invoke(prompt)
 
-            print("Answer generated")
-            print(f"{'=' * 60}\n")
+                print("Answer generated")
+                print(f"{'=' * 60}\n")
 
-            sources = []
-            for idx, doc in enumerate(docs, start=1):
-                page = doc.metadata.get("page")
-                page_label = page + 1 if isinstance(page, int) else None
-                sources.append(
-                    {
-                        "source_id": idx,
-                        "page": page_label,
-                        "preview": doc.page_content[:180],
-                    }
-                )
+                sources = []
+                for idx, doc in enumerate(docs, start=1):
+                    page = doc.metadata.get("page")
+                    page_label = page + 1 if isinstance(page, int) else None
+                    sources.append(
+                        {
+                            "source_id": idx,
+                            "page": page_label,
+                            "preview": doc.page_content[:180],
+                        }
+                    )
 
-            return {
-                "success": True,
-                "answer": response.content,
-                "sources": sources,
-            }
+                return {
+                    "success": True,
+                    "answer": response.content,
+                    "sources": sources,
+                }
 
-        except Exception as e:
-            print(f"\nERROR: {str(e)}\n")
-            import traceback
+            except Exception as e:
+                print(f"\nERROR: {str(e)}\n")
+                import traceback
 
-            traceback.print_exc()
-            return {
-                "success": False,
-                "message": str(e),
-            }
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "message": str(e),
+                }
+        finally:
+            self.operation_lock.release()
 
     def generate_summary(self, session_id: str) -> Dict:
         """Generate summary of document."""
+        if not self.operation_lock.acquire(timeout=15):
+            return {
+                "success": False,
+                "busy": True,
+                "message": "Server sedang memproses request lain. Coba lagi beberapa detik.",
+            }
         try:
-            print(f"\n{'=' * 60}")
-            print("Generating summary")
-            print(f"Session ID: {session_id}")
-            print(f"{'=' * 60}\n")
+            try:
+                print(f"\n{'=' * 60}")
+                print("Generating summary")
+                print(f"Session ID: {session_id}")
+                print(f"{'=' * 60}\n")
 
-            collection_name = f"session_{session_id.replace('-', '_')}"
-            print(f"Loading collection: {collection_name}")
+                collection_name = f"session_{session_id.replace('-', '_')}"
+                print(f"Loading collection: {collection_name}")
 
-            vectorstore = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embeddings,
-                collection_name=collection_name,
-                client_settings=self.chroma_settings,
-            )
+                vectorstore = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=collection_name,
+                    client_settings=self.chroma_settings,
+                )
 
-            print("Retrieving document chunks...")
-            collection_size = self._collection_count(vectorstore)
-            summary_fetch_k = min(30, collection_size) if collection_size > 0 else 30
-            docs = vectorstore.max_marginal_relevance_search(
-                "ringkasan materi pembelajaran konsep utama definisi contoh",
-                k=12,
-                fetch_k=summary_fetch_k,
-            )
+                print("Retrieving document chunks...")
+                collection_size = self._collection_count(vectorstore)
+                summary_fetch_k = min(30, collection_size) if collection_size > 0 else 30
+                docs = vectorstore.max_marginal_relevance_search(
+                    "ringkasan materi pembelajaran konsep utama definisi contoh",
+                    k=12,
+                    fetch_k=summary_fetch_k,
+                )
 
-            if not docs:
-                print("No document found")
-                return {
-                    "success": False,
-                    "message": "No document found. Please upload first.",
-                }
+                if not docs:
+                    print("No document found")
+                    return {
+                        "success": False,
+                        "message": "No document found. Please upload first.",
+                    }
 
-            print(f"Retrieved {len(docs)} chunks")
-            context = "\n\n".join([doc.page_content for doc in docs])
+                print(f"Retrieved {len(docs)} chunks")
+                context = "\n\n".join([doc.page_content for doc in docs])
 
-            prompt = f"""Buat ringkasan materi berikut dalam bahasa Indonesia yang mudah dipahami.
+                prompt = f"""Buat ringkasan materi berikut dalam bahasa Indonesia yang mudah dipahami.
 
 Format:
 1. Topik Utama
@@ -417,23 +444,25 @@ Materi:
 
 Ringkasan:"""
 
-            print("Generating summary...")
-            response = self.llm.invoke(prompt)
+                print("Generating summary...")
+                response = self.llm.invoke(prompt)
 
-            print("Summary generated")
-            print(f"{'=' * 60}\n")
+                print("Summary generated")
+                print(f"{'=' * 60}\n")
 
-            return {
-                "success": True,
-                "summary": response.content,
-            }
+                return {
+                    "success": True,
+                    "summary": response.content,
+                }
 
-        except Exception as e:
-            print(f"\nERROR: {str(e)}\n")
-            import traceback
+            except Exception as e:
+                print(f"\nERROR: {str(e)}\n")
+                import traceback
 
-            traceback.print_exc()
-            return {
-                "success": False,
-                "message": str(e),
-            }
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "message": str(e),
+                }
+        finally:
+            self.operation_lock.release()

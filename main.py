@@ -99,6 +99,8 @@ def process_document():
     if result.get("success"):
         print("PROCESSING COMPLETE")
         return jsonify(result), 200
+    if result.get("busy"):
+        return jsonify(result), 429
 
     print("PROCESSING FAILED")
     return jsonify(result), 500
@@ -124,6 +126,8 @@ def query():
 
     if result.get("success"):
         return jsonify(result), 200
+    if result.get("busy"):
+        return jsonify(result), 429
     return jsonify(result), 400
 
 
@@ -146,6 +150,8 @@ def summary():
 
     if result.get("success"):
         return jsonify(result), 200
+    if result.get("busy"):
+        return jsonify(result), 429
     return jsonify(result), 400
 
 
