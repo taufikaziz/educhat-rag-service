@@ -1,10 +1,12 @@
 import os
 import re
+import warnings
 from typing import Dict, List, Optional
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
 os.environ.setdefault("CHROMA_TELEMETRY", "FALSE")
 
+from pypdf.errors import PdfReadWarning
 from dotenv import load_dotenv
 from chromadb.config import Settings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -15,6 +17,12 @@ from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
 load_dotenv()
+# Suppress noisy non-fatal PDF structure warnings from certain generators.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Multiple definitions in dictionary.*",
+    category=PdfReadWarning,
+)
 
 
 class RAGService:
